@@ -117,10 +117,11 @@ def replace_placeholders(placeholder_dict, input_string):
 
     return result
 
+with open('bb.sql') as f: sql_content = f.read()
 
-sql = '''
--- CREATING BETTERBILL DATABASE
-CREATE DATABASE IF NOT EXISTS {CUR_DB};
-'''
-sql = replace_placeholders(PLACEHOLDER_DICT, sql)
-run_athena_ddl(sql, "bill")
+sql_list = sql_content.split(';;;')
+
+for sql in sql_list:
+    sql = replace_placeholders(PLACEHOLDER_DICT, sql)
+    run_athena_ddl(sql, CUR_DB)
+

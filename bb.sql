@@ -1,4 +1,4 @@
--- 基础表（基于字段形成年月字段）
+-- BASIC COST
 CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
   SELECT 
     CONCAT(CAST(line_item_usage_start_date AS VARCHAR), identity_line_item_id) AS bb_id
@@ -7,16 +7,17 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
     , DATE_FORMAT(line_item_usage_start_date, '%Y-%m') AS bb_usage_year_month
     , line_item_unblended_cost AS bb_cost_no_tax
     , line_item_line_item_description AS bb_cost_desc
+    , line_item_usage_account_id AS bb_account_id
     , product_region_code AS bb_cost_region_code
     , *
   FROM "{CUR_TABLE}"  -- !!! CHANGE TO YOUR CUR TABLE
   WHERE 
-    line_item_usage_account_id = '{ACCOUNT_ID}'  -- !!! CHANGE TO YOUR ACCOUNT ID
-    AND bill_invoice_id <> '' -- blank means not final = possible dups
+    bill_invoice_id <> '' -- blank means not final = possible dups
 );
 
+;;;
 
--- EBS 费用（字段重命名）、筛选拆表
+-- EBS USAGE
 CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
     SELECT
         bb_id
@@ -31,7 +32,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
         AND line_item_line_item_type <> 'Credit'
 );
 
-
+;;;
 
 -- EC2
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
@@ -54,15 +55,23 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
         AND line_item_line_item_type <> 'Credit'
 );
 
+;;;
+
+-- EC2 ON-DEMAND
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_od_costs" AS (
     SELECT
         bb_id
         , 'On Demand' AS bb_ec2_usage_type
         , line_item_unblended_cost AS bb_cost_used
     FROM "bb_dwd_costs"
-    WHERE line_item_line_item_type = 'Usage' AND product_product_family = 'Compute Instance'
+    WHERE
+        line_item_line_item_type = 'Usage'
+        AND product_product_family = 'Compute Instance'
 );
 
+;;;
+
+-- EC2 RESERVED INSTANCE PAID
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_ri_paid_costs" AS (
     SELECT
         bb_id
@@ -73,6 +82,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_ri_paid_costs" AS (
     WHERE line_item_line_item_type = 'RIFee'
 );
 
+;;;
+
+-- EC2 RESERVED INSTANCE USAGE
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_ri_costs" AS (
     SELECT
         bb_id
@@ -84,8 +96,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_ri_costs" AS (
     WHERE line_item_line_item_type = 'DiscountedUsage'
 );
 
+;;;
 
-
+-- SAVINGS PLANS USAGE
 CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
     SELECT
         bb_id
@@ -96,7 +109,9 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
     WHERE line_item_line_item_type = 'SavingsPlanCoveredUsage'
 );
 
+;;;
 
+-- SAVINGS PLANS NEGATION
 CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
     SELECT
         bb_id
@@ -107,6 +122,9 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
     WHERE line_item_line_item_type = 'SavingsPlanNegation'
 );
 
+;;;
+
+-- SAVINGS PLANS UNUSED
 CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS (
     SELECT
         bb_id
@@ -117,6 +135,10 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS (
     LEFT JOIN bb_dwd_sp_negation_costs ON (bb_sp_arn)
 );
 
+;;;
+
+
+-- EMR CLUSTER FEE
 CREATE OR REPLACE VIEW "bb_dwd_amazonemr_fee_costs" AS (
     SELECT
         bb_id
@@ -127,7 +149,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonemr_fee_costs" AS (
     WHERE line_item_product_code = 'ElasticMapReduce'
 );
 
--- 潜在 BUG: 集群名字是有可能变化的
+;;;
+
+-- EMR CLUSTER NAME
 CREATE OR REPLACE VIEW "bb_dim_amazonemr_cluster_names" AS (
     SELECT
         DISTINCT resource_tags_user_name AS bb_emr_cluster_name
@@ -138,6 +162,9 @@ CREATE OR REPLACE VIEW "bb_dim_amazonemr_cluster_names" AS (
         AND bb_emr_cluster_name <> ''
 );
 
+;;;
+
+-- EMR OTHER COSTS
 CREATE OR REPLACE VIEW "bb_dwd_amazonemr_other_costs" AS (
     SELECT
         bb_id
@@ -150,10 +177,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonemr_other_costs" AS (
         OR resource_tags_aws_elasticmapreduce_instance_group_role <> ''
 );
 
+;;;
 
----
---- S3
-
+--- S3 STORAGE LEVEL
 CREATE OR REPLACE VIEW "bb_dwd_amazons3_storage_level" AS (
     SELECT
         bb_id
@@ -172,6 +198,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_storage_level" AS (
         AND line_item_product_code = 'AmazonS3'
 );
 
+;;;
+
+-- S3 REQUESTS COSTS
 CREATE OR REPLACE VIEW "bb_dwd_amazons3_costs_requests" AS (
     SELECT
         bb_id
@@ -186,8 +215,10 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_costs_requests" AS (
         AND line_item_product_code = 'AmazonS3'
 );
 
+;;;
 
-CREATE OR REPLACE VIEW "bb_dws_costs" AS (
+-- FINAL BIG WIDE TABLE
+CREATE OR REPLACE VIEW "bb_bwt_costs" AS (
     SELECT
         COALESCE(ebs.bb_service, ec2.bb_service, costs.line_item_product_code) AS bb_service
         , COALESCE(emr_fee.bb_parent_service, emr_other.bb_parent_service) AS bb_parent_service

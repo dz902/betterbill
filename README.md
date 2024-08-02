@@ -1,5 +1,7 @@
 # BetterBill
 
+[中文](./README-zh.md)
+
 Deeper analysis of Amazon CUR.
 
 # Overview
@@ -17,6 +19,14 @@ alias of fields, so you can tell the meaning of a field just by looking at its n
 Besides, cost computation is also unified. For example, the way Savings Plans is calculated is very different
 from Reserved Instance and On-Demand usage. They have all been unified under the same model, so it is easy to
 analyze your usage across SP, RI and On-Demand.
+
+This is a personal hobby project. You and only you are solely responsible for the usefulness should you decide to
+use any part of this project. Please take into account potential costs and security implications when using this 
+project.
+
+# Getting Started
+
+
 
 # Features
 
