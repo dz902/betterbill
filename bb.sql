@@ -21,7 +21,7 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
     SELECT
         bb_id
-        , 'AmazonEBS' AS bb_service,
+        , 'AmazonEBS' AS bb_service
         , line_item_resource_id AS bb_ebs_volume_id
         , product_volume_api_name AS bb_ebs_volume_type
         , line_item_usage_amount AS bb_ebs_gb_month
@@ -127,12 +127,12 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
 -- SAVINGS PLANS UNUSED
 CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS (
     SELECT
-        bb_id
+        a.bb_id
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , line_item_unblended_cost AS bb_sp_cost_negation
-    FROM "bb_dwd_costs" r
+    FROM "bb_dwd_costs" a
+    LEFT JOIN "bb_dwd_sp_negation_costs" b ON (a.savings_plan_savings_plan_a_r_n = b.bb_sp_arn)
     WHERE line_item_line_item_type = 'SavingsPlanRecurringFee'
-    LEFT JOIN bb_dwd_sp_negation_costs ON (bb_sp_arn)
 );
 
 ;;;
@@ -159,7 +159,7 @@ CREATE OR REPLACE VIEW "bb_dim_amazonemr_cluster_names" AS (
     FROM "bb_dwd_costs"
     WHERE 
         line_item_product_code = 'ElasticMapReduce'
-        AND bb_emr_cluster_name <> ''
+        AND resource_tags_user_name <> ''
 );
 
 ;;;

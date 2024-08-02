@@ -32,7 +32,7 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
   - 稍等片刻，等状态从 In progress → Complete 后，你将可以在你选择的桶内看到 CUR
 - 创建 BetterBill 专用数据库
   - 在 Athena 中执行如下 SQL 语句，如果没用过 Athena，需要先设置一下 Athena 的结果存储桶
-    - `CREATE DATABASE IF NOT EXISTS bb;`
+    - `CREATE DATABASE bb;`
     - 这里的 `bb` 可以改为你喜欢的名字，后续可以配置
 
 

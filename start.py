@@ -70,7 +70,10 @@ def run_athena_ddl(ddl_statement, database):
     # Start the query execution
     response = athena_client.start_query_execution(
         QueryString=query_input['QueryString'],
-        QueryExecutionContext={'Database': database},
+        QueryExecutionContext={
+            'Database': database,
+            'Catalog': 'AwsDataCatalog'
+        },
         ResultConfiguration={
             'OutputLocation': ATHENA_OUTPUT_LOCATION
         }
