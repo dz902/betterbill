@@ -30,11 +30,18 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
   - 选择导出到 Amazon Athena
   - S3 桶，选择或创建一个均可
   - 稍等片刻，等状态从 In progress → Complete 后，你将可以在你选择的桶内看到 CUR
+  - CUR 包括 SQL 文件和数据两部分，其中 SQL 文件可以帮助我们在 Athena 中创建 CUR 外表，下载保存这个 SQL 文件
 - 创建 BetterBill 专用数据库
-  - 在 Athena 中执行如下 SQL 语句，如果没用过 Athena，需要先设置一下 Athena 的结果存储桶
-    - `CREATE DATABASE bb;`
-    - 这里的 `bb` 可以改为你喜欢的名字，后续可以配置
-
+  - 在 Athena 中执行如下 SQL 语句，如果没用过 Athena，需要先创建并设置 Athena 的 S3 结果存储桶，保存这个桶的地址，后续还会用到
+    - `CREATE DATABASE betterbill;`
+    - 把之前的 SQL 中的数据库名字修改成 `betterbill`，表名字可以自定，保存下这个 CUR 表的名字
+- 创建 BetterBill 数据表
+  - 编辑 `start.py` 头部的参数
+    - 区域名字（`REGION_NAME`）
+    - Athena 结果桶地址（`ATHENA_OUTPUT_LOCATION`）
+    - 专用数据库名字（`BB_DB`），即前一步你创建的数据库名，默认为 `betterbill`
+    - CUR 表（`CUR_TABLE`），即你创建的 CUR 表的名字
+  - 运行 `start.py` 即可创建所有的表
 
 # 功能
 
@@ -45,3 +52,48 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 -（计划中）数据完整性检查，确保转换后的成本正确
 -（计划中）在 Amazon QuickSight 中展示使用情况，演示使用 BetterBill 可以实现的功能
 -（开发中）一个用于轻松引导/升级 BetterBill SQL 视图到 Athena 的 boto3 脚本
+
+----
+
+# Amazon QuickSight 看板示例
+
+BetterBill 的核心是拆解了的账单表，可以对接任意支持 Amazon Athena 的 BI 工具来分析和展示。
+
+此处以 Amazon QuickSight 为例，展示我们可以从如何分析账单、设计账单看板。
+
+## 01 总费用
+
+- 按月展示总费用，可以了解整个费用的增长趋势
+- 可以展示是否有折扣券冲抵
+  - 计算方式：`{line_item_line_item_type} = 'Credit'`
+
+## 02 按部门和业务
+
+- ❗️需要提前打好并激活部门和业务对应的资源标签
+
+### 02_01 部门花费-按服务明细
+
+![](imgs/02_01.jpg)
+
+### 02_02 部门花费-百分比
+
+- 用饼图展示不同部门的花费占比
+- 展示没有打标签的花费
+  - 可能是共享花费，也可能是需要打标签的花费
+
+![](imgs/02_02.jpg)
+
+## 03 S3 费用
+
+### 03_01 按存储级别看费用
+
+- 看是否开启智能分层，是否生效
+
+![](imgs/03_01.jpg)
+
+### 03_02 按存储级别看存储量
+
+- 看是否开启智能分层，是否生效
+
+![](imgs/03_02.jpg)
+

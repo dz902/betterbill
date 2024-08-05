@@ -1,18 +1,21 @@
 from pprint import pprint
-
 import boto3
 import re
 
+# EDIT >>>
+
 REGION_NAME = 'us-west-2'
 ATHENA_OUTPUT_LOCATION = 's3://000-json'
-CUR_DB = 'betterbill'
+BB_DB = 'betterbill'
 CUR_TABLE = 'cur_table'
+
+# <<< EDIT
+
+
 PLACEHOLDER_DICT = {
-    'CUR_DB': CUR_DB,
+    'BB_DB': BB_DB,
     'CUR_TABLE': CUR_TABLE
 }
-
-
 def extract_sql_comments(sql_string):
     sql_string = sql_string.strip()
     lines = sql_string.split('\n')
@@ -126,5 +129,5 @@ sql_list = sql_content.split(';;;')
 
 for sql in sql_list:
     sql = replace_placeholders(PLACEHOLDER_DICT, sql)
-    run_athena_ddl(sql, CUR_DB)
+    run_athena_ddl(sql, BB_DB)
 
