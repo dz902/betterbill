@@ -16,6 +16,7 @@ PLACEHOLDER_DICT = {
     'BB_DB': BB_DB,
     'CUR_TABLE': CUR_TABLE
 }
+
 def extract_sql_comments(sql_string):
     sql_string = sql_string.strip()
     lines = sql_string.split('\n')

@@ -55,6 +55,44 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 
 ----
 
+# 表和字段介绍
+
+- `bb_bwt_costs` 费用大宽表
+  - 注意
+    - 如果此条记录不是该服务，则该服务字段为空
+  - 综合
+    - `bb_service` = 实际服务，EBS 和 EC2 是拆开的
+    - `bb_parent_service` = 上级服务，比如 EMR 启动的 EC2 机器，这个值就会是 `AmazonEMR`
+    - `bb_cost` = 费用
+  - `AmazonEBS`
+    - `bb_ebs_volume_id` = 卷 ID，如 `vol-xxxxx`
+    - `bb_ebs_volume_type` = 卷类型，比如 `gp3`
+    - `bb_ebs_gb_month` = 该条记录对应的卷的使用时长，单位为 GB / 月，可用于统计
+  - `AmazonEC2`
+    - `bb_ec2_instance_id` = 实例 ID，如 `i-xxxxx`
+    - `bb_ec2_instance_class` = 实例级别，如 `m5.xlarge`
+    - `bb_ec2_seconds` = 该条记录对应的实例使用时长
+    - `bb_ec2_platform` = 计算平台，如 `Graviton` 和 `x86`
+    - `bb_ec2_usage_type` = 使用类型，比如 On-Demand、RI、SP
+    - 预留实例
+      - `bb_ec2_ri_arn` = 如果此条记录是预留实例，其对应的 RI ARN
+      - `bb_ec2_ri_term_year` = RI 时长，如 1 年或者 3 年
+    - Savings Plans
+      - `bb_sp_arn` = 如果此条记录是 SP 使用记录，其对应的 SP ARN
+  - `AmazonEMR`
+    - `bb_emr_cluster_name` = EMR 集群名字
+    - `bb_emr_cluster_id` = EMR 集群 ID
+    - `bb_emr_instance_role` = EMR 实例角色，比如 Master、Core、Task
+  - `AmazonS3`
+    - `bb_s3_gb_month` = 该条记录对应的卷的存储时长，单位为 GB / 月
+    - `bb_s3_storage_level` = 存储级别，如 `Standard`、`IntelligentTiering`
+    - `bb_s3_request_cost_tier` =  请求费用的等级线，比如前 100w 个是第 1 线（Tier 1），详细参见 S3 收费
+    - `bb_s3_num_requests` = 该条记录如果是请求费，其对应的请求次数
+    - `bb_s3_bucket` = 费用对应的 S3 桶
+    - `bb_s3_cost_type` = 费用类型，有存储费用 `TimedStorage` 和请求费 `Requests` 两种
+
+----
+
 # Amazon QuickSight 看板示例
 
 BetterBill 的核心是拆解了的账单表，可以对接任意支持 Amazon Athena 的 BI 工具来分析和展示。
