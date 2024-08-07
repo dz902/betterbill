@@ -1,3 +1,12 @@
+-- REMOVE EMPTY BILL INVOICE ID
+CREATE OR REPLACE VIEW "bb_cur_table" AS (
+    SELECT *
+    FROM "{CUR_TABLE}"
+    WHERE bill_invoice_id <> ''
+);
+
+;;;
+
 -- BASIC COST
 CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
   SELECT 
@@ -10,7 +19,7 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
     , line_item_usage_account_id AS bb_account_id
     , product_region_code AS bb_cost_region_code
     , *
-  FROM "{CUR_TABLE}"  -- !!! CHANGE TO YOUR CUR TABLE
+  FROM "bb_cur_table"  -- !!! CHANGE TO YOUR CUR TABLE
   WHERE 
     bill_invoice_id <> '' -- blank means not final = possible dups
 );
@@ -102,6 +111,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_ri_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
     SELECT
         bb_id
+        , bb_usage_date
         , 'Savings Plans' AS bb_usage_type
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , savings_plan_savings_plan_effective_cost AS bb_cost_used
@@ -115,12 +125,47 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
     SELECT
         bb_id
+        , bb_usage_date
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , line_item_unblended_cost AS bb_sp_cost_negation
+        , 0 AS bb_cost
         , 0 AS bb_ec2_seconds
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'SavingsPlanNegation'
 );
+
+;;;
+
+-- SAVINGS PLANS > UNUSED
+
+CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS
+WITH sp_daily_cost AS
+(
+    SELECT bb_sp_arn, bb_usage_date, sum(bb_cost_used) AS bb_sp_daily_cost
+    FROM bb_dwd_sp_costs
+    GROUP BY bb_sp_arn, bb_usage_date
+)
+SELECT a.*, ROUND(a.bb_sp_cost_recur-b.bb_sp_daily_cost, 2) AS bb_sp_cost_unused
+FROM bb_dwd_sp_recur_costs a
+LEFT JOIN SP_DAILY_COST b ON (
+    a.bb_usage_date = b.bb_usage_date
+    AND a.bb_sp_arn = b.bb_sp_arn
+);
+
+;;;
+
+-- SAVINGS PLANS > RECURRING FEE
+CREATE OR REPLACE VIEW "bb_dwd_sp_recur_costs" AS (
+    SELECT
+        bb_id
+        , bb_usage_date
+        , savings_plan_savings_plan_a_r_n AS bb_sp_arn
+        , line_item_unblended_cost AS bb_sp_cost_recur
+        , 0 AS bb_cost
+    FROM "bb_dwd_costs"
+    WHERE line_item_line_item_type = 'SavingsPlanRecurringFee'
+);
+
 
 ;;;
 
@@ -136,7 +181,6 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS (
 );
 
 ;;;
-
 
 -- EMR CLUSTER FEE
 CREATE OR REPLACE VIEW "bb_dwd_amazonemr_fee_costs" AS (
@@ -217,17 +261,36 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_costs_requests" AS (
 
 ;;;
 
+-- MARKETPLACE COSTS
+CREATE OR REPLACE VIEW "bb_dwd_aws_marketplace_costs" AS (
+    SELECT
+        bb_id
+        , line_item_legal_entity AS bb_mp_seller
+        , product_product_name AS bb_mp_product_name
+        , 'AWSMarketplace' AS bb_service
+    FROM "bb_dwd_costs"
+    WHERE
+        bill_billing_entity = 'AWS Marketplace'
+);
+
+;;;
+
 -- FINAL BIG WIDE TABLE
 CREATE OR REPLACE VIEW "bb_bwt_costs" AS (
     SELECT
-        COALESCE(ebs.bb_service, ec2.bb_service, costs.line_item_product_code) AS bb_service
+        bb_id
+        , COALESCE(
+            sp.bb_cost_used, ebs.bb_cost, ec2_od.bb_cost_used, ec2_ri.bb_cost_used
+            , costs.line_item_unblended_cost
+        ) AS bb_cost
+        , COALESCE(ebs.bb_service, ec2.bb_service, mp.bb_service, costs.line_item_product_code) AS bb_service
         , COALESCE(emr_fee.bb_parent_service, emr_other.bb_parent_service) AS bb_parent_service
         , ebs.bb_ebs_volume_id
         , ebs.bb_ebs_volume_type
         , ebs.bb_ebs_gb_month
         , ec2.bb_ec2_instance_id
         , ec2.bb_ec2_instance_class
-        , COALESCE(sp_neg.bb_ec2_seconds, ec2.bb_ec2_seconds) AS bb_ec2_seconds
+        , COALESCE(ec2.bb_ec2_seconds) AS bb_ec2_seconds
         , ec2.bb_ec2_platform
         , ec2_ri.bb_ec2_ri_arn
         , ec2_ri.bb_ec2_ri_term_year
@@ -236,13 +299,13 @@ CREATE OR REPLACE VIEW "bb_bwt_costs" AS (
         , COALESCE(emr_other.bb_emr_cluster_id, emr_fee.bb_emr_cluster_id) AS bb_emr_cluster_id
         , emr_other.bb_emr_instance_role
         , COALESCE(ec2_od.bb_ec2_usage_type, ec2_ri.bb_ec2_usage_type, sp.bb_usage_type) AS bb_ec2_usage_type
-        , COALESCE(ebs.bb_cost, ec2_od.bb_cost_used, ec2_ri.bb_cost_used, sp.bb_cost_used, costs.line_item_unblended_cost) AS bb_cost
         , s3_store.bb_s3_gb_month
         , s3_store.bb_s3_storage_level
         , s3_requests.bb_s3_request_cost_tier
         , s3_requests.bb_s3_num_requests
         , COALESCE(s3_store.bb_s3_bucket, s3_requests.bb_s3_bucket) AS bb_s3_bucket
         , COALESCE(s3_store.bb_s3_cost_type, s3_requests.bb_s3_cost_type) AS bb_s3_cost_type
+        , mp.bb_mp_seller, mp.bb_mp_product_name
         , costs.*
     FROM "bb_dwd_costs" costs
     LEFT JOIN "bb_dwd_amazonebs_costs" ebs USING (bb_id)
@@ -250,7 +313,6 @@ CREATE OR REPLACE VIEW "bb_bwt_costs" AS (
     LEFT JOIN "bb_dwd_amazonec2_od_costs" ec2_od USING (bb_id)
     LEFT JOIN "bb_dwd_amazonec2_ri_costs" ec2_ri USING (bb_id)
     LEFT JOIN "bb_dwd_sp_costs" sp USING (bb_id)
-    LEFT JOIN "bb_dwd_sp_negation_costs" sp_neg USING (bb_id)
     LEFT JOIN "bb_dwd_amazonemr_fee_costs" emr_fee USING (bb_id)
     LEFT JOIN "bb_dwd_amazonemr_other_costs" emr_other USING (bb_id)
     LEFT JOIN "bb_dim_amazonemr_cluster_names" emr_name ON (
@@ -259,4 +321,46 @@ CREATE OR REPLACE VIEW "bb_bwt_costs" AS (
     )
     LEFT JOIN "bb_dwd_amazons3_storage_level" s3_store USING (bb_id)
     LEFT JOIN "bb_dwd_amazons3_costs_requests" s3_requests USING (bb_id)
+    LEFT JOIN "bb_dwd_aws_marketplace_costs" mp USING (bb_id)
+    WHERE line_item_line_item_type <> 'SavingsPlanNegation'
 );
+
+;;;
+
+-- QUALITY CONTROL -> TOTAL
+CREATE OR REPLACE VIEW bb_bwt_costs_total_q AS
+WITH
+    a AS (SELECT SUM(bb_cost) AS bb_bwt_cost_total FROM "bb_bwt_costs")
+    , b AS (SELECT SUM(line_item_unblended_cost) AS cur_unblended_total FROM "bb_cur_table")
+SELECT
+    a.bb_bwt_cost_total
+    , b.cur_unblended_total
+    , a.bb_bwt_cost_total-b.cur_unblended_total AS diff
+FROM a, b;
+
+;;;
+
+--- QUALITY CONTROL > BY SERVICE
+WITH
+    a AS (
+        SELECT line_item_product_code, line_item_line_item_type, SUM(bb_cost) AS total
+        FROM "bb_bwt_costs"
+        GROUP BY line_item_product_code,line_item_line_item_type
+    )
+    , b AS (
+        SELECT line_item_product_code, line_item_line_item_type, SUM(line_item_unblended_cost) AS total
+        FROM "bb_cur_table"
+        GROUP BY line_item_product_code,line_item_line_item_type
+    )
+SELECT
+    a.line_item_product_code
+    , a.line_item_line_item_type
+    , a.total AS a_total
+    , b.total AS b_total
+    , ROUND(a.total-b.total, 2) AS diff
+FROM a
+JOIN b ON (
+    a.line_item_product_code = b.line_item_product_code
+    AND a.line_item_line_item_type = b.line_item_line_item_type
+)
+WHERE a.line_item_line_item_type NOT IN ('DiscountedUsage', 'SavingsPlanCoveredUsage');

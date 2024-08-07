@@ -42,6 +42,7 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
     - 专用数据库名字（`BB_DB`），即前一步你创建的数据库名，默认为 `betterbill`
     - CUR 表（`CUR_TABLE`），即你创建的 CUR 表的名字
   - 运行 `start.py` 即可创建所有的表
+  - 在 Athena 中运行 `MSCK REPAIR TABLE cur_table`，读取所有分区，后续每个月有更新时，需要手动运行一下
 
 # 功能
 
@@ -64,6 +65,7 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
     - `bb_service` = 实际服务，EBS 和 EC2 是拆开的
     - `bb_parent_service` = 上级服务，比如 EMR 启动的 EC2 机器，这个值就会是 `AmazonEMR`
     - `bb_cost` = 费用
+    - `bb_usage_year_month` = 年月，方便按月归类费用
   - `AmazonEBS`
     - `bb_ebs_volume_id` = 卷 ID，如 `vol-xxxxx`
     - `bb_ebs_volume_type` = 卷类型，比如 `gp3`
