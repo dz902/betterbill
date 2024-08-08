@@ -50,13 +50,15 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 - 统一的成本计算模型
 - RI、SP 被资源使用情况标记
   - 没用完的部分也可以被识别
--（计划中）数据完整性检查，确保转换后的成本正确
+-（开发中）数据完整性检查，确保转换后的成本正确
 -（计划中）在 Amazon QuickSight 中展示使用情况，演示使用 BetterBill 可以实现的功能
--（开发中）一个用于轻松引导/升级 BetterBill SQL 视图到 Athena 的 boto3 脚本
+-一个用于轻松引导/升级 BetterBill SQL 视图和表到 Athena 的 boto3 脚本
 
 # 已知问题
 
-- 对全预付 RI / SP 的分析目前可能会有偏差
+- 对全预付 RI / SP 的分析目前缺乏数据，可能会有偏差
+- `RIFee` 和 `SavingsPlanRecurringFee` 等被从最终表中移除，转换为实际发生的 RI/SP 费用，以及未用完的费用，因为这个是纯付款指标，而不是成本指标
+- 因为原始数据有较多小数，经过多次除法和累加计算后，可能会有 `0.01`-`1` 的统计误差，此为正常现象，无法避免
 
 ----
 
@@ -70,32 +72,38 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
     - `bb_parent_service` = 上级服务，比如 EMR 启动的 EC2 机器，这个值就会是 `AmazonEMR`
     - `bb_cost` = 费用
     - `bb_usage_year_month` = 年月，方便按月归类费用
-  - `AmazonEBS`
+  - `bb_service` = `AmazonEBS` （此项为 BetterBill 独有）
     - `bb_ebs_volume_id` = 卷 ID，如 `vol-xxxxx`
     - `bb_ebs_volume_type` = 卷类型，比如 `gp3`
     - `bb_ebs_gb_month` = 该条记录对应的卷的使用时长，单位为 GB / 月，可用于统计
-  - `AmazonEC2`
+  - `bb_service` = `AmazonEC2`
     - `bb_ec2_instance_id` = 实例 ID，如 `i-xxxxx`
     - `bb_ec2_instance_class` = 实例级别，如 `m5.xlarge`
-    - `bb_ec2_seconds` = 该条记录对应的实例使用时长
+    - `bb_ec2_seconds` = 该条记录对应的实例使用时长，单位为秒
     - `bb_ec2_platform` = 计算平台，如 `Graviton` 和 `x86`
     - `bb_ec2_usage_type` = 使用类型，比如 On-Demand、RI、SP
-    - 预留实例
-      - `bb_ec2_ri_arn` = 如果此条记录是预留实例，其对应的 RI ARN
-      - `bb_ec2_ri_term_year` = RI 时长，如 1 年或者 3 年
-    - Savings Plans
-      - `bb_sp_arn` = 如果此条记录是 SP 使用记录，其对应的 SP ARN
+  - 预留实例
+    - `bb_ri_arn` = 如果此条记录是预留实例，其对应的 RI ARN
+    - `bb_ri_term_year` = RI 时长，如 1 年或者 3 年
+    - `bb_ri_cost_type` = `Used` 为使用 RI 的记录，`Unused` 为未用完的 RI 记录
+  - Savings Plans
+    - `bb_sp_arn` = 如果此条记录是 SP 使用记录，其对应的 SP ARN
+    - `bb_sp_cost_type` = `Used` 为使用 SP 的记录，`Unused` 为未用完的 SP 记录
   - `AmazonEMR`
     - `bb_emr_cluster_name` = EMR 集群名字
+      - 注意 EMR 允许重复集群名字，仅用此项可能无法区分实际的集群，可附加集群 ID
     - `bb_emr_cluster_id` = EMR 集群 ID
     - `bb_emr_instance_role` = EMR 实例角色，比如 Master、Core、Task
-  - `AmazonS3`
+  - `bb_service` = `AmazonS3`
     - `bb_s3_gb_month` = 该条记录对应的卷的存储时长，单位为 GB / 月
     - `bb_s3_storage_level` = 存储级别，如 `Standard`、`IntelligentTiering`
     - `bb_s3_request_cost_tier` =  请求费用的等级线，比如前 100w 个是第 1 线（Tier 1），详细参见 S3 收费
     - `bb_s3_num_requests` = 该条记录如果是请求费，其对应的请求次数
     - `bb_s3_bucket` = 费用对应的 S3 桶
     - `bb_s3_cost_type` = 费用类型，有存储费用 `TimedStorage` 和请求费 `Requests` 两种
+  - `bb_service` = `AWSMarketplace` （此项为 BetterBill 独有）
+    - `bb_mp_seller` = 销售方名字
+    - `bb_mp_product_name` = 产品名字
 
 ----
 
