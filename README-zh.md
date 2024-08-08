@@ -54,6 +54,10 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 -（计划中）在 Amazon QuickSight 中展示使用情况，演示使用 BetterBill 可以实现的功能
 -（开发中）一个用于轻松引导/升级 BetterBill SQL 视图到 Athena 的 boto3 脚本
 
+# 已知问题
+
+- 对全预付 RI / SP 的分析目前可能会有偏差
+
 ----
 
 # 表和字段介绍
