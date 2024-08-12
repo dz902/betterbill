@@ -27,18 +27,38 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
 
 ;;;
 
+-- DATA TRANSFER COST
+CREATE OR REPLACE VIEW "bb_dwd_data_transfer_costs" AS (
+  SELECT
+    bb_id
+    , _bb_service AS _bb_parent_service
+    , 'AWSDataTransfer' AS _bb_service
+    , line_item_usage_amount AS _bb_dt_gb
+    , product_transfer_type AS _bb_dt_type
+  FROM "bb_dwd_costs"  -- !!! CHANGE TO YOUR CUR TABLE
+  WHERE
+    product_product_family = 'Data Transfer'
+);
+
+;;;
+
 -- EBS USAGE
 CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
     SELECT
         bb_id
+        , _bb_service AS _bb_parent_service
         , 'AmazonEBS' AS _bb_service
         , line_item_resource_id AS bb_ebs_volume_id
         , product_volume_api_name AS bb_ebs_volume_type
         , line_item_usage_amount AS bb_ebs_gb_month
         , line_item_unblended_cost AS bb_cost
+        , CASE product_product_family
+            WHEN 'Storage Snapshot' THEN 'Snapshot'
+            ELSE 'Storage'
+        END AS _bb_ebs_usage_type
     FROM "bb_dwd_costs"
     WHERE
-        line_item_usage_type LIKE '%EBS:Volume%'
+        line_item_usage_type LIKE '%EBS:%'
         AND line_item_line_item_type <> 'Credit'
 );
 
@@ -82,6 +102,19 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_od_costs" AS (
 
 ;;;
 
+-- EC2 > NAT GW
+CREATE OR REPLACE VIEW "bb_dwd_ec2_nat_costs" AS (
+    SELECT
+        bb_id
+        , 'NAT Gateway' AS _bb_vpc_usage_type
+        , line_item_usage_amount AS _bb_ec2_nat_hours
+    FROM "bb_dwd_costs"
+    WHERE
+        product_product_family = 'NAT Gateway'
+);
+
+;;;
+
 -- EC2 RESERVED INSTANCE PAID
 CREATE OR REPLACE VIEW "bb_dwd_ri_paid_costs" AS (
     SELECT
@@ -96,6 +129,7 @@ CREATE OR REPLACE VIEW "bb_dwd_ri_paid_costs" AS (
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'RIFee'
 );
+
 
 ;;;
 
@@ -324,6 +358,7 @@ AS
         ) AS bb_cost
         , COALESCE(
             sp_unused._bb_service, ri_unused._bb_service
+            , dt._bb_service
             , ebs._bb_service, ec2._bb_service
             , mp._bb_service, costs._bb_service
         ) AS bb_service
@@ -331,11 +366,13 @@ AS
             emr_fee.bb_parent_service
             , emr_other.bb_parent_service
             , sp_unused._bb_service, ri_unused._bb_service
-            , ebs._bb_service, ec2._bb_service
+            , dt._bb_parent_service
+            , ebs._bb_parent_service, ec2._bb_service
             , mp._bb_service, costs._bb_service) AS bb_parent_service
         , ebs.bb_ebs_volume_id
         , ebs.bb_ebs_volume_type
         , ebs.bb_ebs_gb_month
+        , ebs._bb_ebs_usage_type AS bb_ebs_usage_type
         , ec2.bb_ec2_instance_id
         , ec2.bb_ec2_instance_class
         , COALESCE(ec2.bb_ec2_seconds) AS bb_ec2_seconds
@@ -345,6 +382,8 @@ AS
         , ri.bb_ri_term_year
         , COALESCE(sp_unused.bb_sp_arn, sp.bb_sp_arn) AS bb_sp_arn
         , sp_unused.bb_sp_cost_unused
+        , nat._bb_ec2_nat_hours AS bb_ec2_nat_hours
+        , COALESCE(nat._bb_vpc_usage_type) AS bb_vpc_usage_type
         , COALESCE(sp_unused.bb_sp_cost_type, sp.bb_sp_cost_type) AS bb_sp_cost_type
         , COALESCE(ri_unused.bb_ri_cost_type, ri.bb_ri_cost_type) AS bb_ri_cost_type
         , COALESCE(emr_name.bb_emr_cluster_name, emr_fee.bb_emr_cluster_name) AS bb_emr_cluster_name
@@ -358,12 +397,13 @@ AS
         , COALESCE(s3_store.bb_s3_bucket, s3_requests.bb_s3_bucket) AS bb_s3_bucket
         , COALESCE(s3_store.bb_s3_cost_type, s3_requests.bb_s3_cost_type) AS bb_s3_cost_type
         , mp.bb_mp_seller, mp.bb_mp_product_name
-        , costs.*
         , (
             costs.line_item_line_item_type IS NOT NULL
             AND costs.line_item_line_item_type = 'Credit'
         ) AS bb_is_credit
         , COALESCE(sp_unused._bb_usage_date, ri_unused._bb_usage_date, costs._bb_usage_date) AS bb_usage_date
+        , dt._bb_dt_type AS bb_dt_type, dt._bb_dt_gb AS bb_dt_gb
+        , costs.*
 
         -- DUE TO ATHENA LIMITATION THIS MUST BE LAST FIELD
         , COALESCE(sp_unused._bb_usage_year_month, ri_unused._bb_usage_year_month, costs._bb_usage_year_month) AS bb_usage_year_month
@@ -382,6 +422,8 @@ AS
     LEFT JOIN "bb_dwd_amazons3_storage_level" s3_store USING (bb_id)
     LEFT JOIN "bb_dwd_amazons3_costs_requests" s3_requests USING (bb_id)
     LEFT JOIN "bb_dwd_aws_marketplace_costs" mp USING (bb_id)
+    LEFT JOIN "bb_dwd_data_transfer_costs" dt USING (bb_id)
+    LEFT JOIN "bb_dwd_ec2_nat_costs" nat USING (bb_id)
     FULL JOIN "bb_dwd_sp_unused_costs" sp_unused USING (bb_id)
     FULL JOIN "bb_dwd_ri_unused_costs" ri_unused USING (bb_id)
     WHERE
