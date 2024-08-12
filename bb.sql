@@ -11,14 +11,15 @@ CREATE OR REPLACE VIEW "bb_cur_table" AS (
 CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
   SELECT 
     CONCAT(CAST(line_item_usage_start_date AS VARCHAR), identity_line_item_id) AS bb_id
-    , CAST(line_item_usage_start_date AS DATE) AS bb_usage_date
+    , CAST(line_item_usage_start_date AS DATE) AS _bb_usage_date
     , product_region_code AS bb_region
     , line_item_unblended_cost AS bb_cost_no_tax
     , line_item_line_item_description AS bb_cost_desc
     , line_item_usage_account_id AS bb_account_id
     , product_region_code AS bb_cost_region_code
+    , line_item_product_code AS _bb_service
     , *
-    , DATE_FORMAT(line_item_usage_start_date, '%Y-%m') AS bb_usage_year_month
+    , DATE_FORMAT(line_item_usage_start_date, '%Y-%m') AS _bb_usage_year_month
   FROM "bb_cur_table"  -- !!! CHANGE TO YOUR CUR TABLE
   WHERE 
     bill_invoice_id <> '' -- blank means not final = possible dups
@@ -30,7 +31,7 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
     SELECT
         bb_id
-        , 'AmazonEBS' AS bb_service
+        , 'AmazonEBS' AS _bb_service
         , line_item_resource_id AS bb_ebs_volume_id
         , product_volume_api_name AS bb_ebs_volume_type
         , line_item_usage_amount AS bb_ebs_gb_month
@@ -47,10 +48,11 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonebs_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
     SELECT
         bb_id
-        , 'AmazonEC2' AS bb_service
+        , 'AmazonEC2' AS _bb_service
         , line_item_resource_id AS bb_ec2_instance_id
         , product_instance_type as bb_ec2_instance_class
         , line_item_usage_amount * 3600 AS bb_ec2_seconds
+        , CAST(product_vcpu AS INT) * line_item_usage_amount * 3600 AS bb_ec2_vcpu_seconds
         , CASE
             WHEN product_physical_processor LIKE '%Graviton%' THEN 'Graviton'
             ELSE 'x86'
@@ -84,7 +86,9 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_od_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_ri_paid_costs" AS (
     SELECT
         bb_id
-        , bb_usage_year_month
+        , _bb_usage_year_month
+        , _bb_usage_date
+        , _bb_service
         , reservation_reservation_a_r_n AS bb_ri_arn
         , line_item_usage_amount AS bb_ec2_hours
         , REGEXP_EXTRACT(line_item_usage_type, '^.+?:(.+)$', 1) AS bb_ec2_instance_class_inferred
@@ -114,22 +118,24 @@ CREATE OR REPLACE VIEW "bb_dwd_ri_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_ri_unused_costs" AS
 WITH ri_monthly_used AS (
     SELECT
-        bb_usage_year_month
+        _bb_usage_year_month
         , reservation_reservation_a_r_n as bb_ri_arn
         , SUM(reservation_effective_cost) as bb_cost_used
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'DiscountedUsage'
-    GROUP BY bb_usage_year_month, reservation_reservation_a_r_n
+    GROUP BY _bb_usage_year_month, reservation_reservation_a_r_n
 )
 SELECT
     CONCAT(a.bb_id, 'UNUSEDRI') AS bb_id
-    , a.bb_usage_year_month
+    , a._bb_usage_year_month
+    , a._bb_usage_date
+    , a._bb_service
     , a.bb_ri_arn
     , 'Unused' AS bb_ri_cost_type
     , ROUND(a.bb_cost-COALESCE(b.bb_cost_used, 0), 2) AS bb_cost
 FROM "bb_dwd_ri_paid_costs" a
 LEFT JOIN ri_monthly_used b ON (
-    a.bb_usage_year_month = b.bb_usage_year_month
+    a._bb_usage_year_month = b._bb_usage_year_month
     AND a.bb_ri_arn = b.bb_ri_arn
 );
 
@@ -139,8 +145,8 @@ LEFT JOIN ri_monthly_used b ON (
 CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
     SELECT
         bb_id
-        , bb_usage_date
-        , bb_usage_year_month
+        , _bb_usage_date
+        , _bb_usage_year_month
         , 'Savings Plans' AS bb_usage_type
         , 'Used' AS bb_sp_cost_type
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
@@ -155,7 +161,7 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
     SELECT
         bb_id
-        , bb_usage_date
+        , _bb_usage_date
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , line_item_unblended_cost AS bb_sp_cost_negation
         , 0 AS bb_cost
@@ -166,42 +172,42 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_negation_costs" AS (
 
 ;;;
 
--- SAVINGS PLANS > UNUSED
-
-CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS
-WITH sp_daily_cost AS
-(
-    SELECT bb_sp_arn, bb_usage_year_month, bb_usage_date, sum(bb_cost_used) AS bb_sp_daily_cost
-    FROM bb_dwd_sp_costs
-    GROUP BY bb_sp_arn, bb_usage_year_month, bb_usage_date
-)
-SELECT
-    CONCAT(a.bb_id, 'UNUSEDSP') AS bb_id
-    , a.bb_usage_year_month
-    , a.bb_usage_date
-    , a.bb_sp_arn
-    , 'ComputeSavingsPlans' as bb_service
-    , 'Unused' AS bb_sp_cost_type
-    , ROUND(a.bb_sp_cost_recur-b.bb_sp_daily_cost, 4) AS bb_sp_cost_unused
-FROM bb_dwd_sp_recur_costs a
-LEFT JOIN SP_DAILY_COST b ON (
-    a.bb_usage_date = b.bb_usage_date
-    AND a.bb_sp_arn = b.bb_sp_arn
-);
-
-;;;
-
 -- SAVINGS PLANS > RECURRING FEE
 CREATE OR REPLACE VIEW "bb_dwd_sp_recur_costs" AS (
     SELECT
         bb_id
-        , bb_usage_date
-        , bb_usage_year_month
+        , _bb_usage_date
+        , _bb_usage_year_month
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , line_item_unblended_cost AS bb_sp_cost_recur
         , 0 AS bb_cost
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'SavingsPlanRecurringFee'
+);
+
+;;;
+
+-- SAVINGS PLANS > UNUSED
+
+CREATE OR REPLACE VIEW "bb_dwd_sp_unused_costs" AS
+WITH sp_daily_cost AS
+(
+    SELECT bb_sp_arn, _bb_usage_year_month, _bb_usage_date, sum(bb_cost_used) AS bb_sp_daily_cost
+    FROM bb_dwd_sp_costs
+    GROUP BY bb_sp_arn, _bb_usage_year_month, _bb_usage_date
+)
+SELECT
+    CONCAT(a.bb_id, 'UNUSEDSP') AS bb_id
+    , a._bb_usage_year_month
+    , a._bb_usage_date
+    , a.bb_sp_arn
+    , 'ComputeSavingsPlans' as _bb_service
+    , 'Unused' AS bb_sp_cost_type
+    , ROUND(a.bb_sp_cost_recur-b.bb_sp_daily_cost, 4) AS bb_sp_cost_unused
+FROM bb_dwd_sp_recur_costs a
+LEFT JOIN SP_DAILY_COST b ON (
+    a._bb_usage_date = b._bb_usage_date
+    AND a.bb_sp_arn = b.bb_sp_arn
 );
 
 ;;;
@@ -291,7 +297,7 @@ CREATE OR REPLACE VIEW "bb_dwd_aws_marketplace_costs" AS (
         bb_id
         , line_item_legal_entity AS bb_mp_seller
         , product_product_name AS bb_mp_product_name
-        , 'AWSMarketplace' AS bb_service
+        , 'AWSMarketplace' AS _bb_service
     FROM "bb_dwd_costs"
     WHERE
         bill_billing_entity = 'AWS Marketplace'
@@ -306,7 +312,7 @@ DROP TABLE IF EXISTS bb_bwt_costs;
 
 -- FINAL BIG WIDE TABLE
 CREATE TABLE "bb_bwt_costs"
-WITH (format = 'PARQUET', partitioned_by = ARRAY['bb_usage_year_month1'])
+WITH (format = 'PARQUET', partitioned_by = ARRAY['bb_usage_year_month'])
 AS
     SELECT
         bb_id
@@ -317,17 +323,23 @@ AS
             , costs.line_item_unblended_cost
         ) AS bb_cost
         , COALESCE(
-            sp_unused.bb_service
-            , ebs.bb_service, ec2.bb_service
-            , mp.bb_service, costs.line_item_product_code
+            sp_unused._bb_service, ri_unused._bb_service
+            , ebs._bb_service, ec2._bb_service
+            , mp._bb_service, costs._bb_service
         ) AS bb_service
-        , COALESCE(emr_fee.bb_parent_service, emr_other.bb_parent_service) AS bb_parent_service
+        , COALESCE(
+            emr_fee.bb_parent_service
+            , emr_other.bb_parent_service
+            , sp_unused._bb_service, ri_unused._bb_service
+            , ebs._bb_service, ec2._bb_service
+            , mp._bb_service, costs._bb_service) AS bb_parent_service
         , ebs.bb_ebs_volume_id
         , ebs.bb_ebs_volume_type
         , ebs.bb_ebs_gb_month
         , ec2.bb_ec2_instance_id
         , ec2.bb_ec2_instance_class
         , COALESCE(ec2.bb_ec2_seconds) AS bb_ec2_seconds
+        , COALESCE(ec2.bb_ec2_vcpu_seconds) AS bb_ec2_vcpu_seconds
         , ec2.bb_ec2_platform
         , ri.bb_ri_arn
         , ri.bb_ri_term_year
@@ -347,7 +359,14 @@ AS
         , COALESCE(s3_store.bb_s3_cost_type, s3_requests.bb_s3_cost_type) AS bb_s3_cost_type
         , mp.bb_mp_seller, mp.bb_mp_product_name
         , costs.*
-        , COALESCE(sp_unused.bb_usage_year_month, ri_unused.bb_usage_year_month, costs.bb_usage_year_month) AS bb_usage_year_month1
+        , (
+            costs.line_item_line_item_type IS NOT NULL
+            AND costs.line_item_line_item_type = 'Credit'
+        ) AS bb_is_credit
+        , COALESCE(sp_unused._bb_usage_date, ri_unused._bb_usage_date, costs._bb_usage_date) AS bb_usage_date
+
+        -- DUE TO ATHENA LIMITATION THIS MUST BE LAST FIELD
+        , COALESCE(sp_unused._bb_usage_year_month, ri_unused._bb_usage_year_month, costs._bb_usage_year_month) AS bb_usage_year_month
     FROM "bb_dwd_costs" costs
     LEFT JOIN "bb_dwd_amazonebs_costs" ebs USING (bb_id)
     LEFT JOIN "bb_dwd_amazonec2_costs" ec2 USING (bb_id)
@@ -389,12 +408,12 @@ FROM a, b;
 --- QUALITY CONTROL > BY SERVICE (EXCEPT RI / SP)
 WITH
     a AS (
-        SELECT bb_service
+        SELECT _bb_service
         , line_item_line_item_type
         , line_item_line_item_description
         , SUM(bb_cost) AS total
         FROM "bb_bwt_costs"
-        GROUP BY bb_service
+        GROUP BY _bb_service
         , line_item_line_item_type
         , line_item_line_item_description
     )
@@ -409,7 +428,7 @@ WITH
         , line_item_line_item_description
     )
 SELECT
-    a.bb_service
+    a._bb_service
     , a.line_item_line_item_type
     , a.line_item_line_item_description
     , a.total AS a_total
@@ -417,7 +436,7 @@ SELECT
     , ROUND(a.total-b.total, 2) AS diff
 FROM a
 FULL JOIN b ON (
-    a.bb_service = b.line_item_product_code
+    a._bb_service = b.line_item_product_code
     and a.line_item_line_item_type = b.line_item_line_item_type
     and a.line_item_line_item_description = b.line_item_line_item_description
 )
@@ -444,16 +463,16 @@ FROM a, b
 
 -- QA > RI
 WITH a AS (
-    SELECT bb_usage_year_month, SUM(line_item_unblended_cost) AS total
+    SELECT _bb_usage_year_month, SUM(line_item_unblended_cost) AS total
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'RIFee'
-    group by bb_usage_year_month
+    group by _bb_usage_year_month
 ), b AS (
-    SELECT bb_usage_year_month1, SUM(bb_cost) AS total
+    SELECT bb_usage_year_month, SUM(bb_cost) AS total
     FROM "bb_bwt_costs"
     WHERE bb_ri_cost_type IS NOT NULL
-    group by bb_usage_year_month1
+    group by bb_usage_year_month
 )
-SELECT bb_usage_year_month1, a.total AS a_total, b.total AS b_total, ROUND(a.total-b.total, 2) AS diff
+SELECT bb_usage_year_month, a.total AS a_total, b.total AS b_total, ROUND(a.total-b.total, 2) AS diff
 FROM a
-FULL JOIN b on (a.bb_usage_year_month = b.bb_usage_year_month1)
+FULL JOIN b on (a._bb_usage_year_month = b.bb_usage_year_month)
