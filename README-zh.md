@@ -57,7 +57,8 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 # 已知问题
 
 - 对全预付 RI / SP 的分析目前缺乏数据，可能会有偏差
-- `RIFee` 和 `SavingsPlanRecurringFee` 等被从最终表中移除，转换为实际发生的 RI/SP 费用，以及未用完的费用，因为这个是纯付款指标，而不是成本指标
+- `RIFee` 和 `SavingsPlanRecurringFee` 等被从最终表中移除，转换为实际发生的 RI/SP 费用 + 未用完的费用
+  - 因为 RI/SP 的预付费是纯付款指标，而对成分分析帮助较小，所以转换成了实际算法，这也让我们得以把标签应用到具体实例上
 - 因为原始数据有较多小数，经过多次除法和累加计算后，可能会有 `0.01`-`1` 的统计误差，此为正常现象，无法避免
 
 ----
@@ -66,12 +67,13 @@ BetterBill 是我对 CUR 报告可用性的改进。基本上，我们解构了�
 
 - `bb_bwt_costs` 费用大宽表
   - 注意
-    - 如果此条记录不是该服务，则该服务字段为空
+    - 所有的查询都应该通过这张最终汇总表，其他 `dwd` 表仅供排错使用
   - 综合
-    - `bb_service` = 实际服务，EBS 和 EC2 是拆开的
+    - `bb_service` = 实际服务，比如 EBS 和 EC2 是拆开的
     - `bb_parent_service` = 上级服务，比如 EMR 启动的 EC2 机器，这个值就会是 `AmazonEMR`
     - `bb_cost` = 费用
-    - `bb_usage_year_month` = 年月，方便按月归类费用
+    - `bb_usage_year_month1` = 年月，方便按月归类费用
+      - 因为 SQL 的某些限制，目前后缀有个 `1`，敬请注意
   - `bb_service` = `AmazonEBS` （此项为 BetterBill 独有）
     - `bb_ebs_volume_id` = 卷 ID，如 `vol-xxxxx`
     - `bb_ebs_volume_type` = 卷类型，比如 `gp3`
