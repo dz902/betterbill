@@ -70,8 +70,17 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
         bb_id
         , 'AmazonEC2' AS _bb_service
         , line_item_resource_id AS bb_ec2_instance_id
-        , product_instance_type as bb_ec2_instance_class
         , line_item_usage_amount * 3600 AS bb_ec2_seconds
+        , COALESCE(
+            NULLIF(product_instance_type_family, '')
+            , REGEXP_EXTRACT(product_instance_type, '^(.+?)\..+$', 1)
+            , 'Unknown'
+        ) AS _bb_ec2_instance_type_family
+        , COALESCE(
+            UPPER(REGEXP_EXTRACT(product_instance_type, '^(.+?)[1-9][0-9]*[a-z]*\..+$', 1))
+            , 'Unknown'
+        ) AS _bb_ec2_instance_type_grand_family
+        , product_instance_type AS _bb_ec2_instance_type
         , CAST(product_vcpu AS INT) * line_item_usage_amount * 3600 AS bb_ec2_vcpu_seconds
         , CASE
             WHEN product_physical_processor LIKE '%Graviton%' THEN 'Graviton'
@@ -92,7 +101,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_amazonec2_od_costs" AS (
     SELECT
         bb_id
-        , 'On Demand' AS bb_ec2_usage_type
+        , 'On Demand' AS bb_ec2_purchase_option
         , line_item_unblended_cost AS bb_cost_used
     FROM "bb_dwd_costs"
     WHERE
@@ -124,7 +133,7 @@ CREATE OR REPLACE VIEW "bb_dwd_ri_paid_costs" AS (
         , _bb_service
         , reservation_reservation_a_r_n AS bb_ri_arn
         , line_item_usage_amount AS bb_ec2_hours
-        , REGEXP_EXTRACT(line_item_usage_type, '^.+?:(.+)$', 1) AS bb_ec2_instance_class_inferred
+        , REGEXP_EXTRACT(line_item_usage_type, '^.+?:(.+)$', 1) AS bb_ec2_instance_type_inferred
         , line_item_unblended_cost AS bb_cost
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'RIFee'
@@ -137,7 +146,7 @@ CREATE OR REPLACE VIEW "bb_dwd_ri_paid_costs" AS (
 CREATE OR REPLACE VIEW "bb_dwd_ri_costs" AS (
     SELECT
         bb_id
-        , 'Reserved Instance' AS bb_ec2_usage_type
+        , 'Reserved Instance' AS bb_ec2_purchase_option
         , 'Used' AS bb_ri_cost_type
         , reservation_reservation_a_r_n as bb_ri_arn
         , pricing_lease_contract_length AS bb_ri_term_year
@@ -374,7 +383,9 @@ AS
         , ebs.bb_ebs_gb_month
         , ebs._bb_ebs_usage_type AS bb_ebs_usage_type
         , ec2.bb_ec2_instance_id
-        , ec2.bb_ec2_instance_class
+        , ec2._bb_ec2_instance_type AS bb_ec2_instance_type
+        , ec2._bb_ec2_instance_type_family AS bb_ec2_instance_type_family
+        , ec2._bb_ec2_instance_type_grand_family AS bb_ec2_instance_type_grand_family
         , COALESCE(ec2.bb_ec2_seconds) AS bb_ec2_seconds
         , COALESCE(ec2.bb_ec2_vcpu_seconds) AS bb_ec2_vcpu_seconds
         , ec2.bb_ec2_platform
@@ -389,7 +400,7 @@ AS
         , COALESCE(emr_name.bb_emr_cluster_name, emr_fee.bb_emr_cluster_name) AS bb_emr_cluster_name
         , COALESCE(emr_other.bb_emr_cluster_id, emr_fee.bb_emr_cluster_id) AS bb_emr_cluster_id
         , emr_other.bb_emr_instance_role
-        , COALESCE(ec2_od.bb_ec2_usage_type, ri.bb_ec2_usage_type, sp.bb_usage_type) AS bb_ec2_usage_type
+        , COALESCE(ec2_od.bb_ec2_purchase_option, ri.bb_ec2_purchase_option, sp.bb_usage_type) AS bb_ec2_purchase_option
         , s3_store.bb_s3_gb_month
         , s3_store.bb_s3_storage_level
         , s3_requests.bb_s3_request_cost_tier
@@ -431,6 +442,40 @@ AS
         OR (
             line_item_line_item_type NOT IN ('SavingsPlanNegation', 'SavingsPlanRecurringFee', 'RIFee')
         );
+
+;;;
+
+-- REPORT > EC2 HOURLY USAGE
+CREATE OR REPLACE VIEW "bb_rpt_ec2_hourly_usage" AS
+WITH expanded_hours AS (
+    SELECT
+        line_item_usage_start_date
+        , line_item_usage_end_date
+        , date_add('hour', seq_index, line_item_usage_start_date) AS hour
+        , LEAST(1, line_item_usage_amount - seq_index) AS fractional_usage
+        , line_item_usage_amount
+        , bb_ec2_purchase_option
+    FROM
+        bb_bwt_costs
+    CROSS JOIN UNNEST (
+        sequence(0, date_diff('hour', line_item_usage_start_date, line_item_usage_end_date) - 1)
+    ) AS t(seq_index)
+    WHERE bb_service = 'AmazonEC2' AND bb_ec2_purchase_option IS NOT NULL
+),
+distributed_usage AS (
+    SELECT
+        hour
+        , CASE
+            WHEN fractional_usage > 0 THEN fractional_usage
+            ELSE 0
+        END AS usage
+        , bb_ec2_purchase_option
+    FROM
+        expanded_hours
+)
+SELECT hour, usage, bb_ec2_purchase_option
+FROM distributed_usage
+WHERE usage > 0;
 
 ;;;
 
