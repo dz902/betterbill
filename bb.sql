@@ -194,6 +194,7 @@ CREATE OR REPLACE VIEW "bb_dwd_sp_costs" AS (
         , 'Used' AS bb_sp_cost_type
         , savings_plan_savings_plan_a_r_n AS bb_sp_arn
         , savings_plan_savings_plan_effective_cost AS bb_cost_used
+        , savings_plan_purchase_term AS bb_sp_term_year
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'SavingsPlanCoveredUsage'
 );
@@ -255,6 +256,50 @@ LEFT JOIN SP_DAILY_COST b ON (
 
 ;;;
 
+-- RDS COSTS
+
+CREATE OR REPLACE VIEW "bb_dwd_rds_costs" AS
+SELECT
+    bb_id
+    , CASE product_product_family
+        WHEN 'Database Instance' THEN 'Instance'
+        WHEN 'Database Storage' THEN 'Storage'
+    END AS bb_rds_usage_type
+    , CASE
+        WHEN product_physical_processor LIKE '%Graviton%' THEN 'Graviton'
+        ELSE 'x86'
+    END AS _bb_rds_platform
+    , product_database_engine AS bb_rds_engine
+    , product_deployment_option AS bb_rds_azness
+    , product_instance_type AS bb_rds_instance_type
+    , line_item_resource_id AS bb_rds_instance_arn
+    , REGEXP_EXTRACT(line_item_resource_id, '^.+:(.+)$', 1) AS bb_rds_instance_name
+    , COALESCE(
+        NULLIF(product_instance_type_family, '')
+        , REGEXP_EXTRACT(product_instance_type, '^(.+?)\..+$', 1)
+        , 'Unknown'
+    ) AS _bb_rds_instance_type_family
+    , COALESCE(
+        UPPER(REGEXP_EXTRACT(product_instance_type, '^(.+?)[1-9][0-9]*[a-z]*\..+$', 1))
+        , 'Unknown'
+    ) AS _bb_rds_instance_type_grand_family
+    , CASE
+        WHEN product_database_engine IS NOT NULL THEN line_item_usage_amount
+        ELSE NULL
+    END AS rds_instance_seconds
+    , CASE
+        WHEN line_item_usage_type LIKE '%GP2-Storage%' THEN 'GP2'
+        WHEN line_item_usage_type LIKE '%GP3-Storage%' THEN 'GP3'
+        ELSE REGEXP_EXTRACT(product_volume_type, '^(.+-)?(.+)$', 2)
+    END AS rds_storage_volume_type
+    , CASE
+        WHEN product_volume_type IS NOT NULL THEN line_item_usage_amount
+        ELSE NULL
+    END AS rds_storage_gb_month
+FROM bb_dwd_costs;
+
+;;;
+
 -- EMR CLUSTER FEE
 CREATE OR REPLACE VIEW "bb_dwd_amazonemr_fee_costs" AS (
     SELECT
@@ -303,12 +348,20 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_storage_level" AS (
         , line_item_usage_amount AS bb_s3_gb_month
         , line_item_resource_id AS bb_s3_bucket
         , CASE
-            WHEN line_item_operation = 'StandardStorage' THEN 'STD'
-            WHEN line_item_operation = 'IntelligentTieringIAStorage' THEN 'IT-IA'
-            WHEN line_item_operation = 'IntelligentTieringFAStorage' THEN 'IT-FA'
-            ELSE line_item_operation
+            WHEN line_item_operation = 'StandardStorage' THEN 'Standard'
+            WHEN line_item_operation = 'IntelligentTieringIAStorage' THEN 'Intelligent Tiering (Infrequent)'
+            WHEN line_item_operation = 'IntelligentTieringFAStorage' THEN 'Inlteligent Tiering (Frequent)'
+            WHEN line_item_operation = 'IntelligentTieringAIAStorage' THEN 'Intelligent Tiering (Instant Archive)'
+            WHEN line_item_operation = 'IntelligentTieringAAStorage' THEN 'Intelligent Tiering (Archive)'
+            WHEN line_item_operation = 'IntelligentTieringDAAStorage' THEN 'Intelligent Tiering (Deep Archive)'
+            WHEN line_item_operation = 'DeepArchiveStorage' THEN 'Deep Archive'
+            WHEN line_item_operation = 'DeepArchiveStagingStorage' THEN 'Deep Archive - Multipart'
+            WHEN line_item_operation = 'DeepArchiveS3ObjectOverhead' THEN 'Deep Archive - Name Metadata'
+            WHEN line_item_operation = 'DeepArchiveObjectOverhead' THEN 'Deep Archive - Index Metadata'
+            WHEN line_item_operation = 'ExpressOneZoneStorage' THEN 'Express One Zone'
         END AS bb_s3_storage_level
-        , 'TimedStorage' AS bb_s3_cost_type
+        , 'TimedStorage' AS bb_s3_usage_type
+        , line_item_operation LIKE '%SizeOverhead%' AS bb_s3_is_overhead
     FROM "bb_dwd_costs"
     WHERE 
         line_item_usage_type LIKE '%-TimedStorage-%' 
@@ -325,7 +378,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_costs_requests" AS (
         , REGEXP_EXTRACT(line_item_usage_type, '.+?-(Tier\d)', 1) AS bb_s3_request_cost_tier
         , line_item_usage_amount AS bb_s3_num_requests
         , line_item_resource_id AS bb_s3_bucket
-        , 'Requests' AS bb_s3_cost_type
+        , 'Requests' AS bb_s3_usage_type
     FROM "bb_dwd_costs"
     WHERE 
         line_item_usage_type LIKE '%-Requests-%'
@@ -392,6 +445,7 @@ AS
         , ri.bb_ri_arn
         , ri.bb_ri_term_year
         , COALESCE(sp_unused.bb_sp_arn, sp.bb_sp_arn) AS bb_sp_arn
+        , sp.bb_sp_term_year
         , sp_unused.bb_sp_cost_unused
         , nat._bb_ec2_nat_hours AS bb_ec2_nat_hours
         , COALESCE(nat._bb_vpc_usage_type) AS bb_vpc_usage_type
@@ -401,12 +455,11 @@ AS
         , COALESCE(emr_other.bb_emr_cluster_id, emr_fee.bb_emr_cluster_id) AS bb_emr_cluster_id
         , emr_other.bb_emr_instance_role
         , COALESCE(ec2_od.bb_ec2_purchase_option, ri.bb_ec2_purchase_option, sp.bb_usage_type) AS bb_ec2_purchase_option
-        , s3_store.bb_s3_gb_month
-        , s3_store.bb_s3_storage_level
+        , s3_store.bb_s3_gb_month, s3_store.bb_s3_storage_level, s3_store.bb_s3_is_overhead
         , s3_requests.bb_s3_request_cost_tier
         , s3_requests.bb_s3_num_requests
         , COALESCE(s3_store.bb_s3_bucket, s3_requests.bb_s3_bucket) AS bb_s3_bucket
-        , COALESCE(s3_store.bb_s3_cost_type, s3_requests.bb_s3_cost_type) AS bb_s3_cost_type
+        , COALESCE(s3_store.bb_s3_usage_type, s3_requests.bb_s3_usage_type) AS bb_s3_usage_type
         , mp.bb_mp_seller, mp.bb_mp_product_name
         , (
             costs.line_item_line_item_type IS NOT NULL
@@ -414,6 +467,13 @@ AS
         ) AS bb_is_credit
         , COALESCE(sp_unused._bb_usage_date, ri_unused._bb_usage_date, costs._bb_usage_date) AS bb_usage_date
         , dt._bb_dt_type AS bb_dt_type, dt._bb_dt_gb AS bb_dt_gb
+        , rds.bb_rds_usage_type, rds.bb_rds_engine, rds.bb_rds_instance_arn, rds.bb_rds_instance_name
+        , rds._bb_rds_platform AS bb_rds_platform
+        , rds.bb_rds_azness
+        , rds.bb_rds_instance_type, rds._bb_rds_instance_type_family AS bb_rds_instance_type_family
+        , rds._bb_rds_instance_type_grand_family AS bb_rds_instance_type_grand_family
+        , rds.rds_instance_seconds
+        , rds.rds_storage_volume_type, rds.rds_storage_gb_month
         , costs.*
 
         -- DUE TO ATHENA LIMITATION THIS MUST BE LAST FIELD
@@ -435,6 +495,7 @@ AS
     LEFT JOIN "bb_dwd_aws_marketplace_costs" mp USING (bb_id)
     LEFT JOIN "bb_dwd_data_transfer_costs" dt USING (bb_id)
     LEFT JOIN "bb_dwd_ec2_nat_costs" nat USING (bb_id)
+    LEFT JOIN "bb_dwd_rds_costs" rds USING (bb_id)
     FULL JOIN "bb_dwd_sp_unused_costs" sp_unused USING (bb_id)
     FULL JOIN "bb_dwd_ri_unused_costs" ri_unused USING (bb_id)
     WHERE
