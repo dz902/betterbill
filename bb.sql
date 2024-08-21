@@ -12,12 +12,14 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
   SELECT 
     CONCAT(CAST(line_item_usage_start_date AS VARCHAR), identity_line_item_id) AS bb_id
     , CAST(line_item_usage_start_date AS DATE) AS _bb_usage_date
-    , product_region_code AS bb_region
+    , product_region AS bb_region
     , line_item_unblended_cost AS bb_cost_no_tax
     , line_item_line_item_description AS bb_cost_desc
     , line_item_usage_account_id AS bb_account_id
-    , product_region_code AS bb_cost_region_code
+    , product_region_code AS bb_region_code
     , line_item_product_code AS _bb_service
+    , line_item_line_item_type = 'Tax' AS bb_is_tax
+    , line_item_line_item_type = 'Credit' AS bb_is_credit
     , *
     , DATE_FORMAT(line_item_usage_start_date, '%Y-%m') AS _bb_usage_year_month
   FROM "bb_cur_table"  -- !!! CHANGE TO YOUR CUR TABLE
@@ -28,6 +30,7 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
 ;;;
 
 -- DATA TRANSFER COST
+-- https://aws.amazon.com/blogs/networking-and-content-delivery/understand-aws-data-transfer-details-in-depth-from-cost-and-usage-report-using-athena-query-and-quicksight/
 CREATE OR REPLACE VIEW "bb_dwd_data_transfer_costs" AS (
   SELECT
     bb_id
@@ -35,7 +38,36 @@ CREATE OR REPLACE VIEW "bb_dwd_data_transfer_costs" AS (
     , 'AWSDataTransfer' AS _bb_service
     , line_item_usage_amount AS _bb_dt_gb
     , product_transfer_type AS _bb_dt_type
-  FROM "bb_dwd_costs"  -- !!! CHANGE TO YOUR CUR TABLE
+    , CASE
+        WHEN product_transfer_type = 'AWS Inbound' THEN 'AWS ← Internet'
+        WHEN product_transfer_type = 'CloudFront to Origin' THEN 'CloudFront → Origin'
+        WHEN product_transfer_type = 'CloudFront Outbound' THEN 'CloudFront → Internet'
+        WHEN line_item_usage_type LIKE '%-CloudFront-In-Bytes' THEN
+            REGEXP_REPLACE(line_item_usage_type, '^(.+?)-CloudFront-In-Bytes$', 'CloudFront ← $1')
+        WHEN line_item_usage_type LIKE '%-CloudFront-Out-Bytes' THEN
+            REGEXP_REPLACE(line_item_usage_type, '^(.+?)-CloudFront-Out-Bytes$', 'CloudFront → $1')
+        WHEN product_transfer_type = 'IntraRegion' THEN
+            CASE
+                WHEN line_item_operation LIKE 'VPCPeering-%' THEN REGEXP_REPLACE(line_item_usage_type, '^(.+?)-DataTransfer-Regional-Bytes$', 'VPC1.AZ1 ← Peering → VPC2.AZ2')
+                WHEN line_item_operation = 'FargateTask' THEN 'FargateAZ1 ←→ FargateAZ2'
+                WHEN line_item_operation LIKE 'PublicIP-%' THEN 'AZ1 ← Public IP → AZ2'
+                WHEN line_item_operation = 'VpcEndpoint' THEN 'AZ1 ← VPC Endpoint → AZ2'
+                WHEN line_item_operation = 'LoadBalancing-PublicIP-%' THEN 'AZ1 ← Load Balacner Public IP → AZ2'
+                ELSE REGEXP_REPLACE(line_item_usage_type, '^(.+?)-DataTransfer-Regional-Bytes$', '$1.AZ1 ←→ $1.AZ2')
+            END
+        WHEN line_item_usage_type LIKE '%-DataTransfer-Out-Bytes' THEN
+            REGEXP_REPLACE(line_item_usage_type, '^(.+?)-DataTransfer-Out-Bytes$', '$1 → Internet')
+        WHEN line_item_usage_type LIKE '%-AWS-Out-Bytes' THEN
+            REGEXP_REPLACE(line_item_usage_type, '^(.+?)-(.+?)-AWS-Out-Bytes$', '$1 → $2')
+        WHEN line_item_usage_type LIKE '%-AWS-In-Bytes' THEN
+            REGEXP_REPLACE(line_item_usage_type, '^(.+?)-(.+?)-AWS-In-Bytes$', '$1 ← $2')
+        WHEN line_item_usage_type LIKE '%-DataTransfer-xAZ-%-Bytes' THEN 'Same AZ'
+        WHEN line_item_usage_type LIKE '%-Hst:Data-Bytes-In' THEN 'SageMaker Endpoint ← Any'
+        WHEN line_item_usage_type LIKE '%-Hst:Data-Bytes-Out' THEN 'SageMaker Endpoint → Any'
+        WHEN line_item_operation LIKE 'VPCPeering-%' THEN 'VPC ← Peering → VPC'
+        ELSE product_transfer_type
+    END AS bb_dt_dir
+  FROM "bb_dwd_costs"
   WHERE
     product_product_family = 'Data Transfer'
 );
@@ -387,6 +419,25 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_costs_requests" AS (
 
 ;;;
 
+-- ELB COSTS
+CREATE OR REPLACE VIEW "bb_dwd_awselb_costs" AS (
+    SELECT
+        bb_id
+        , REGEXP_EXTRACT(line_item_resource_id, '^.+:loadbalancer/(.+?)/(.+?)/(.+?)$', 2) AS bb_elb_name
+        , line_item_usage_amount AS bb_elb_hour
+        , CASE
+            WHEN line_item_usage_type LIKE '%LoadBalancerUsage%' THEN 'Usage'
+            WHEN line_item_usage_type LIKE '%LCUUsage%' THEN 'LCU'
+            ELSE line_item_usage_type
+        END AS bb_elb_usage_type
+        , REGEXP_EXTRACT(line_item_operation, '^LoadBalancing:(.+)$', 1) AS bb_elb_type
+    FROM "bb_dwd_costs"
+    WHERE
+        line_item_product_code = 'AWSELB'
+);
+
+;;;
+
 -- MARKETPLACE COSTS
 CREATE OR REPLACE VIEW "bb_dwd_aws_marketplace_costs" AS (
     SELECT
@@ -461,12 +512,8 @@ AS
         , COALESCE(s3_store.bb_s3_bucket, s3_requests.bb_s3_bucket) AS bb_s3_bucket
         , COALESCE(s3_store.bb_s3_usage_type, s3_requests.bb_s3_usage_type) AS bb_s3_usage_type
         , mp.bb_mp_seller, mp.bb_mp_product_name
-        , (
-            costs.line_item_line_item_type IS NOT NULL
-            AND costs.line_item_line_item_type = 'Credit'
-        ) AS bb_is_credit
         , COALESCE(sp_unused._bb_usage_date, ri_unused._bb_usage_date, costs._bb_usage_date) AS bb_usage_date
-        , dt._bb_dt_type AS bb_dt_type, dt._bb_dt_gb AS bb_dt_gb
+        , dt._bb_dt_type AS bb_dt_type, dt._bb_dt_gb AS bb_dt_gb, dt.bb_dt_dir
         , rds.bb_rds_usage_type, rds.bb_rds_engine, rds.bb_rds_instance_arn, rds.bb_rds_instance_name
         , rds._bb_rds_platform AS bb_rds_platform
         , rds.bb_rds_azness
@@ -474,6 +521,7 @@ AS
         , rds._bb_rds_instance_type_grand_family AS bb_rds_instance_type_grand_family
         , rds.rds_instance_seconds
         , rds.rds_storage_volume_type, rds.rds_storage_gb_month
+        , elb.bb_elb_name, elb.bb_elb_usage_type, elb.bb_elb_type
         , costs.*
 
         -- DUE TO ATHENA LIMITATION THIS MUST BE LAST FIELD
@@ -496,6 +544,7 @@ AS
     LEFT JOIN "bb_dwd_data_transfer_costs" dt USING (bb_id)
     LEFT JOIN "bb_dwd_ec2_nat_costs" nat USING (bb_id)
     LEFT JOIN "bb_dwd_rds_costs" rds USING (bb_id)
+    LEFT JOIN "bb_dwd_awselb_costs" elb USING (bb_id)
     FULL JOIN "bb_dwd_sp_unused_costs" sp_unused USING (bb_id)
     FULL JOIN "bb_dwd_ri_unused_costs" ri_unused USING (bb_id)
     WHERE
