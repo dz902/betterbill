@@ -122,6 +122,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_costs" AS (
     WHERE 
         line_item_product_code = 'AmazonEC2' 
         AND line_item_usage_type NOT LIKE '%EBS:Volume%'
+        AND REGEXP_LIKE(line_item_usage_type, '(Box|Spot|Dedicated|Host|HostBox|ReservedHost|Sched|Unused)Usage')
         AND product_vcpu <> ''
         AND product_servicecode <> 'AWSDataTransfer'
         AND line_item_line_item_type <> 'Credit'
@@ -139,6 +140,22 @@ CREATE OR REPLACE VIEW "bb_dwd_amazonec2_od_costs" AS (
     WHERE
         line_item_line_item_type = 'Usage'
         AND product_product_family = 'Compute Instance'
+        AND line_item_usage_type NOT LIKE '%SpotUsage%'
+);
+
+;;;
+
+-- EC2 SPOT
+CREATE OR REPLACE VIEW "bb_dwd_amazonec2_spot_costs" AS (
+    SELECT
+        bb_id
+        , 'Spot' AS bb_ec2_purchase_option
+        , line_item_unblended_cost AS bb_cost_used
+    FROM "bb_dwd_costs"
+    WHERE
+        line_item_line_item_type = 'Usage'
+        AND product_product_family = 'Compute Instance'
+        AND line_item_usage_type LIKE '%SpotUsage%'
 );
 
 ;;;
@@ -322,6 +339,8 @@ SELECT
     , CASE
         WHEN line_item_usage_type LIKE '%GP2-Storage%' THEN 'GP2'
         WHEN line_item_usage_type LIKE '%GP3-Storage%' THEN 'GP3'
+        WHEN line_item_line_item_description LIKE '%io1%' THEN 'IO1'
+        WHEN line_item_line_item_description LIKE '%io2%' THEN 'IO2'
         ELSE REGEXP_EXTRACT(product_volume_type, '^(.+-)?(.+)$', 2)
     END AS rds_storage_volume_type
     , CASE
@@ -391,6 +410,7 @@ CREATE OR REPLACE VIEW "bb_dwd_amazons3_storage_level" AS (
             WHEN line_item_operation = 'DeepArchiveS3ObjectOverhead' THEN 'Deep Archive - Name Metadata'
             WHEN line_item_operation = 'DeepArchiveObjectOverhead' THEN 'Deep Archive - Index Metadata'
             WHEN line_item_operation = 'ExpressOneZoneStorage' THEN 'Express One Zone'
+            ELSE line_item_operation
         END AS bb_s3_storage_level
         , 'TimedStorage' AS bb_s3_usage_type
         , line_item_operation LIKE '%SizeOverhead%' AS bb_s3_is_overhead
@@ -502,10 +522,17 @@ AS
         , COALESCE(nat._bb_vpc_usage_type) AS bb_vpc_usage_type
         , COALESCE(sp_unused.bb_sp_cost_type, sp.bb_sp_cost_type) AS bb_sp_cost_type
         , COALESCE(ri_unused.bb_ri_cost_type, ri.bb_ri_cost_type) AS bb_ri_cost_type
-        , COALESCE(emr_name.bb_emr_cluster_name, emr_fee.bb_emr_cluster_name) AS bb_emr_cluster_name
+        , COALESCE(emr_name.bb_emr_cluster_name
+            , emr_fee.bb_emr_cluster_name
+            , emr_name.bb_emr_cluster_id
+            , emr_fee.bb_emr_cluster_id) AS bb_emr_cluster_name
         , COALESCE(emr_other.bb_emr_cluster_id, emr_fee.bb_emr_cluster_id) AS bb_emr_cluster_id
         , emr_other.bb_emr_instance_role
-        , COALESCE(ec2_od.bb_ec2_purchase_option, ri.bb_ec2_purchase_option, sp.bb_usage_type) AS bb_ec2_purchase_option
+        , COALESCE(
+            ec2_od.bb_ec2_purchase_option
+            , ri.bb_ec2_purchase_option
+            , sp.bb_usage_type
+            , ec2_spot.bb_ec2_purchase_option) AS bb_ec2_purchase_option
         , s3_store.bb_s3_gb_month, s3_store.bb_s3_storage_level, s3_store.bb_s3_is_overhead
         , s3_requests.bb_s3_request_cost_tier
         , s3_requests.bb_s3_num_requests
@@ -530,6 +557,7 @@ AS
     LEFT JOIN "bb_dwd_amazonebs_costs" ebs USING (bb_id)
     LEFT JOIN "bb_dwd_amazonec2_costs" ec2 USING (bb_id)
     LEFT JOIN "bb_dwd_amazonec2_od_costs" ec2_od USING (bb_id)
+    LEFT JOIN "bb_dwd_amazonec2_spot_costs" ec2_spot USING (bb_id)
     LEFT JOIN "bb_dwd_ri_costs" ri USING (bb_id)
     LEFT JOIN "bb_dwd_sp_costs" sp USING (bb_id)
     LEFT JOIN "bb_dwd_amazonemr_fee_costs" emr_fee USING (bb_id)
@@ -556,6 +584,7 @@ AS
 ;;;
 
 -- REPORT > EC2 HOURLY USAGE
+-- TODO: add account ID
 CREATE OR REPLACE VIEW "bb_rpt_ec2_hourly_usage" AS
 WITH expanded_hours AS (
     SELECT
