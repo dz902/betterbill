@@ -1,9 +1,19 @@
+-- ADD PARTITIONS IF EXISTS
+MSCK REPAIR TABLE {CUR_TABLE};
+
+;;;
+
 -- REMOVE EMPTY BILL INVOICE ID
-CREATE OR REPLACE VIEW "bb_cur_table" AS (
-    SELECT *
+CREATE OR REPLACE VIEW "bb_cur_table" AS
+WITH tmp AS (
+    SELECT *,
+    ROW_NUMBER() OVER (
+        PARTITION BY CONCAT(CAST(line_item_usage_start_date AS VARCHAR), identity_line_item_id)
+        ORDER BY bill_invoice_id DESC) AS rn  -- remove non-finalized rows
     FROM "{CUR_TABLE}"
-    WHERE bill_invoice_id <> ''
-);
+)
+SELECT DISTINCT *
+FROM tmp
 
 ;;;
 
@@ -19,12 +29,10 @@ CREATE OR REPLACE VIEW "bb_dwd_costs" AS (
     , product_region_code AS bb_region_code
     , line_item_product_code AS _bb_service
     , line_item_line_item_type = 'Tax' AS bb_is_tax
-    , line_item_line_item_type = 'Credit' AS bb_is_credit
+    , (line_item_line_item_type IS NOT NULL AND line_item_line_item_type = 'Credit') AS bb_is_credit
     , *
     , DATE_FORMAT(line_item_usage_start_date, '%Y-%m') AS _bb_usage_year_month
   FROM "bb_cur_table"  -- !!! CHANGE TO YOUR CUR TABLE
-  WHERE 
-    bill_invoice_id <> '' -- blank means not final = possible dups
 );
 
 ;;;
@@ -198,7 +206,7 @@ CREATE OR REPLACE VIEW "bb_dwd_ri_costs" AS (
         , 'Reserved Instance' AS bb_ec2_purchase_option
         , 'Used' AS bb_ri_cost_type
         , reservation_reservation_a_r_n as bb_ri_arn
-        , pricing_lease_contract_length AS bb_ri_term_year
+        , IF(pricing_lease_contract_length <> '', pricing_lease_contract_length) AS bb_ri_term_year
         , reservation_effective_cost as bb_cost_used
     FROM "bb_dwd_costs"
     WHERE line_item_line_item_type = 'DiscountedUsage'
